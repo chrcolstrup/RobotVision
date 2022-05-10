@@ -1,0 +1,161 @@
+from robodk.robolink import *       # Import the robolink library (bridge with RoboDK)
+from robodk.robomath import *       # Import the robomath library
+from robodk.robofileio import *     # Import the robofile io file operation toolbox
+
+RDK = Robolink()                    # establish a link with the simulator
+robot = RDK.Item('UR5')             # retrieve the robot by name
+tool = RDK.Item('gripper_full_2')   # Retrieve tool item
+home = RDK.Item('home')             # Retrieve home item
+
+h = 19.2                        # Height of LEGO brick w/o studs
+ApDist = 5*h                    # Desired approach distance on pickup
+buildCounter = 5                # Number of builds
+
+RefPose = transl(-89,-213,0)*rotz(3/2*pi)   # Position of reference coordinate system
+
+DelPose1 = transl(400,85,0)*rotz(pi/4)      # Build positions for Simpsons family    
+DelPose2 = transl(400,155,0)*rotz(pi/4)
+DelPose3 = transl(400,225,0)*rotz(pi/4)
+DelPose4 = transl(400,295,0)*rotz(pi/4)
+DelPose5 = transl(400,365,0)*rotz(pi/4)
+
+# Color sequence of each build
+fig1 = ['blue', 'yellow']
+fig2 = ['blue','orange','yellow']
+fig3 = ['yellow','orange','yellow']
+fig4 = ['green','yellow','blue']
+fig5 = ['blue','white','yellow']
+
+
+targets = []                # Empty target array
+targetPoses = []            # Empty target poses array
+bricks = []                 # Empty brick array
+deliv = []                  # Empty delivery array
+
+colors = fig1 + fig2 + fig3 + fig4 + fig5           # Array of color sequence for the builds
+
+heights = [len(fig1), len(fig2), len(fig3),
+           len(fig4), len(fig5)]                    # Array of heights for the builds
+           
+DelPose = [DelPose1, DelPose2, DelPose3, DelPose4, DelPose5] # Array of build positions 
+
+Reference = RDK.Item('Reference')       # Retrieve reference item
+Reference.setPose(RefPose)              # Set pose of reference item real-life position
+
+robot.setPoseFrame(Reference)       # Set frame of robot to reference frame
+
+# Import csv file with real-life brick information from vision
+path = 'C:\\Users\\your_path' # Insert path to CSV file
+import csv
+with open(path+'bricks_data.csv', newline= '\n') as csvfile:
+    Pos = list(csv.reader(csvfile))     # Save vision data in array 
+for i in range(len(Pos)):
+    for j in range(5):
+        try:
+            Pos[i][j] = float(Pos[i][j])
+        except Exception:
+            pass
+
+itemCounter = len(Pos)      # Number of LEGO bricks
+
+# Define search function with input desired color and array of positions
+def search(color, data_array):          
+    for j, brick in enumerate(data_array):
+        if brick[3] == color and brick[4] == 0:             # If color = desired and it has not been used
+            data_array[j][4] = 1                            # Set as used
+            return brick[0],brick[1],brick[2],brick[3]      # Return X, Y, orientation, color
+
+    return -1
+
+for i in range(buildCounter):
+    deliv.append(RDK.Item('D' + str(i + 1)))    # Retrieve build items in 'deliv' array
+    deliv[i].setParent(Reference)               # Set reference coordinate system as parent of build items
+    deliv[i].setPose(DelPose[i])                # Set desired position of build item
+
+for i in range(itemCounter):
+    targets.append(RDK.Item('T'+str(i+1)))      # Retrieve target items in 'targets' array
+    Y,X,rot,col = search(colors[i],Pos)         # Search for i'th desired color and retrieve coordinates and orientation
+    targets[i].setParent(Reference)             # Set reference coordinate system as parent of target item
+    
+    targets[i].setPose(transl(X,Y,0)*rotz(-rot+(pi/4)))     # Set pose of targets to coordinates/orientation of brick
+    targetPoses.append(targets[i].Pose())                   # Retrieve target positions in 'targetPoses' array
+
+# Define additional search function for placing virtual bricks in RoboDK (identical to previous)
+def search1(color, data_array):          
+    for j, brick in enumerate(data_array):
+        if brick[3] == color and brick[4] == 1:             # If color = desired and it has not been used
+            data_array[j][4] = 2                            # Set as used
+            return brick[0],brick[1],brick[2],brick[3]      # Return X, Y, orientation, color
+
+    return -1
+    
+# Colors of virtual bricks for simulation representation
+colorRef = ['blue','blue','blue','blue',
+            'yellow','yellow','yellow','yellow','yellow','yellow',
+            'orange','orange','green','white'] 
+
+for i in range(itemCounter):
+    bricks.append(RDK.Item('Duplo'+str(i+1)))   # Retrieve brick items in 'bricks' array
+    Y, X, rot, col = search1(colorRef[i], Pos)  # Search for first desired brick item and retrieve corresponding coordinates/orientation
+    bricks[i].setParent(Reference)              # Set reference coordinate system as parent of brick item
+    bricks[i].setPose(transl(X, Y, 0) * rotz(-rot+(pi/4))*rotx(pi/2))  # Set pose of brick items to coordinates of real-life brick
+
+for i in range(itemCounter):
+    approach = targetPoses[i]*transl(0,0,ApDist)         # Set approach distance
+    depart = targetPoses[i]*transl(0,0,ApDist)           # Set departure distance
+
+    robot.setDO(0, 1)
+    robot.setDO(1, 0)           # Open gripper
+
+    robot.MoveL(approach)       # Move to brick approach position
+    robot.MoveL(targets[i])     # Move to target
+
+    tool.AttachClosest()        # Attach brick (in simulation)
+    robot.setDO(0, 0)
+    robot.setDO(1, 1)           # Close gripper
+
+    robot.Pause(250)            # Wait 250 ms
+
+    robot.MoveL(depart)         # Move to brick departure position
+
+    if i <= heights[0]-1:           # If first build
+
+        approachDeliv = deliv[0].Pose()*transl(0,0,ApDist)                  # set build approach
+        deliver = deliv[0].Pose()*transl(0,0,(i*h))                         # set build position
+
+    elif i <= sum(heights[0:2])-1:  # If second build
+
+        approachDeliv = deliv[1].Pose()*transl(0,0,ApDist)                  # set build approach
+        deliver = deliv[1].Pose()*transl(0,0,((i-sum(heights[0:1]))*h))     # set build position
+
+    elif i <= sum(heights[0:3])-1:  # If third build
+
+        approachDeliv = deliv[2].Pose()*transl(0,0,ApDist)                  # set build approach
+        deliver = deliv[2].Pose()*transl(0,0,((i-sum(heights[0:2]))*h))     # set build position
+
+    elif i <= sum(heights[0:4])-1:  # If fourth build
+
+        approachDeliv = deliv[3].Pose()*transl(0,0,ApDist)                  # set build approach
+        deliver = deliv[3].Pose()*transl(0,0,((i-sum(heights[0:3]))*h))     # set build position
+
+    else:                           # If last build
+
+        approachDeliv = deliv[4].Pose()*transl(0,0,ApDist)                  # set build approach
+        deliver = deliv[4].Pose()*transl(0,0,((i-sum(heights[0:4]))*h))     # set build position
+
+    robot.MoveL(approachDeliv)          # Move to build approach
+    robot.MoveL(deliver)                # Move to build point
+
+    tool.DetachAll()                    # Detach brick
+    robot.setDO(0, 1)
+    robot.setDO(1, 0)                   # Open gripper
+
+    robot.Pause(250)                    # Wait 250 ms
+
+    robot.MoveL(approachDeliv)          # Move to build departure
+
+    if i == itemCounter-1:      # If last build is complete
+        robot.MoveJ(home)       # Move home
+    else:
+        continue
+
